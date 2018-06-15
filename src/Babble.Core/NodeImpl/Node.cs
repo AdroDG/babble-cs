@@ -51,6 +51,11 @@ namespace Babble.Core.NodeImpl
         private readonly AsyncProducerConsumerQueue<Block> commitCh;
         private readonly AsyncMonitor commitChMonitor;
 
+        // Ensures there is only one background operation executed at a time
+        private SemaphoreSlim _backgroundOperationLock = new SemaphoreSlim(1);
+        private readonly object _operationLock = new object();
+        private readonly object _selectorLock = new object();
+
         private Stopwatch nodeStart;
         private int syncRequests;
         private int syncErrors;
@@ -117,7 +122,7 @@ namespace Babble.Core.NodeImpl
             return Controller.Init();
         }
 
-        public Task StartAsync(bool gossip, CancellationToken ct = default)
+        public void StartAsync(bool gossip, CancellationToken ct = default)
         {
             var tcsInit = new TaskCompletionSource<bool>();
 
@@ -128,44 +133,45 @@ namespace Babble.Core.NodeImpl
                 //The ControlTimer allows the background routines to control the
                 //heartbeat timer when the node is in the Babbling state. The timer should
                 //only be running when there are uncommitted transactions in the system.
-
                 var controlTimerTask = controlTimer.RunAsync(cts.Token);
 
                 //Execute some background work regardless of the state of the node.
                 //Process RPC requests as well as SumbitTx and CommitBlock requests
-
-                var processingRpcTask = ProcessingRpc(cts.Token);
-                var addingTransactions = AddingTransactions(cts.Token);
-                var commitBlocks = CommitBlocks(cts.Token);
+                DoBackgroundWord(cts.Token);
 
                 //Execute Node State Machine
-
                 var stateMachineTask = StateMachineRunAsync(gossip, cts.Token);
 
                 // await all
-
-                var runTask = Task.WhenAll(controlTimerTask, stateMachineTask, processingRpcTask, addingTransactions, commitBlocks);
+                var runTask = Task.WhenAll(controlTimerTask, stateMachineTask);//, processingRpcTask, addingTransactions, commitBlocks);
 
                 tcsInit.SetResult(true);
 
                 await runTask;
             }, ct);
 
-            return tcsInit.Task;
+            //return tcsInit.Task;
+        }
+
+        private void DoBackgroundWord(CancellationToken ctsToken)
+        {
+            Task.Run(() => ProcessingRpc(ctsToken), ctsToken);
+            Task.Run(() => AddingTransactions(ctsToken), ctsToken);
+            Task.Run(() => CommitBlocks(ctsToken), ctsToken);
         }
 
         private async Task StateMachineRunAsync(bool gossip, CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
-                //    // Run different routines depending on node state
+                // Run different routines depending on node state
                 var state = nodeState.GetState();
                 logger.Debug("Run Loop {state}", state);
 
                 switch (state)
                 {
                     case NodeStateEnum.Babbling:
-                        await BabbleAsync(gossip, ct);
+                        Babble(gossip, ct);
                         break;
 
                     case NodeStateEnum.CatchingUp:
@@ -179,48 +185,60 @@ namespace Babble.Core.NodeImpl
         }
 
         // Background work
-
         private async Task ProcessingRpc(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
-                var rpc = await netCh.DequeueAsync(ct);
-                logger.Debug("Processing RPC");
-                await ProcessRpcAsync(rpc, ct);
-
-                using (await netChMonitor.EnterAsync())
+                await _backgroundOperationLock.WaitAsync(ct);
+                if (ct.IsCancellationRequested)
                 {
-                    netChMonitor.Pulse();
+                    return;
+                }
+                try
+                {
+                    var rpc = await netCh.DequeueAsync(ct);
+                    logger.Debug("Processing RPC");
+                    await ProcessRpcAsync(rpc, ct);
+
+                    using (await netChMonitor.EnterAsync())
+                    {
+                        netChMonitor.Pulse();
+                    }
+                }
+                finally
+                {
+                    _backgroundOperationLock.Release();
                 }
             }
         }
 
-        public async Task ProcessingRpcCompleted()
-        {
-            using (await netChMonitor.EnterAsync())
-            {
-                await netChMonitor.WaitAsync();
-            }
-        }
-
-
         private async Task AddingTransactions(CancellationToken ct)
-
         {
             while (!ct.IsCancellationRequested)
             {
-                var tx = await submitCh.DequeueAsync(ct);
-
-                logger.Debug("Adding Transaction");
-                await AddTransaction(tx, ct);
-
-                using (await submitChMonitor.EnterAsync())
+                await _backgroundOperationLock.WaitAsync(ct);
+                if (ct.IsCancellationRequested)
                 {
-                    submitChMonitor.Pulse();
+                    return;
+                }
+                try
+                {
+                    var tx = await submitCh.DequeueAsync(ct);
+
+                    logger.Debug("Adding Transaction");
+                    AddTransaction(tx);
+
+                    using (await submitChMonitor.EnterAsync())
+                    {
+                        submitChMonitor.Pulse();
+                    }
+                }
+                finally
+                {
+                    _backgroundOperationLock.Release();
                 }
             }
         }
-
 
         public async Task AddingTransactionsCompleted()
         {
@@ -234,22 +252,33 @@ namespace Babble.Core.NodeImpl
         {
             while (!ct.IsCancellationRequested)
             {
-                var block = await commitCh.DequeueAsync(ct);
-                logger.Debug("Committing Block Index={Index}; RoundReceived={RoundReceived}; TxCount={TxCount}", block.Index(), block.RoundReceived(), block.Transactions().Length);
-
-                var err = await Commit(block);
-                if (err != null)
+                await _backgroundOperationLock.WaitAsync(ct);
+                if (ct.IsCancellationRequested)
                 {
-                    logger.Error("Committing Block", err);
+                    return;
                 }
-
-                using (await commitChMonitor.EnterAsync())
+                try
                 {
-                    commitChMonitor.Pulse();
+                    var block = await commitCh.DequeueAsync(ct);
+                    logger.Debug("Committing Block Index={Index}; RoundReceived={RoundReceived}; TxCount={TxCount}", block.Index(), block.RoundReceived(), block.Transactions().Length);
+
+                    var err = Commit(block);
+                    if (err != null)
+                    {
+                        logger.Error("Committing Block", err);
+                    }
+
+                    using (await commitChMonitor.EnterAsync())
+                    {
+                        commitChMonitor.Pulse();
+                    }
+                }
+                finally
+                {
+                    _backgroundOperationLock.Release();
                 }
             }
         }
-
 
         public async Task CommitBlocksCompleted()
         {
@@ -259,34 +288,34 @@ namespace Babble.Core.NodeImpl
             }
         }
 
-        private async Task BabbleAsync(bool gossip, CancellationToken ct)
+        private void Babble(bool gossip, CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
                 var oldState = nodeState.GetState();
 
-                await controlTimer.TickCh.DequeueAsync(ct);
+                controlTimer.TickCh.DequeueAsync(ct).Wait(ct);
 
                 if (gossip)
                 {
-                    var (proceed, err) = await PreGossip();
+                    var (proceed, err) = PreGossip();
                     if (proceed && err == null)
                     {
                         logger.Debug("Time to gossip!");
                         var peer = PeerSelector.Next();
                         logger.Debug("gossip from {localAddr} to peer {peer}",LocalAddr, peer.NetAddr);
-                        await Gossip(peer.NetAddr);
+                        Gossip(peer.NetAddr);
 
 
                     }
 
                     if (!Controller.NeedGossip())
                     {
-                        await controlTimer.StopCh.EnqueueAsync(true, ct);
+                        controlTimer.StopCh.Enqueue(true, ct);
                     }
                     else if (!controlTimer.Set)
                     {
-                        await controlTimer.ResetCh.EnqueueAsync(true, ct);
+                        controlTimer.ResetCh.Enqueue(true, ct);
                     }
                 }
 
@@ -313,11 +342,11 @@ namespace Babble.Core.NodeImpl
                 switch (rpc.Command)
                 {
                     case SyncRequest cmd:
-                        await ProcessSyncRequestAsync(rpc, cmd);
+                        ProcessSyncRequestAsync(rpc, cmd);
                         break;
 
                     case EagerSyncRequest cmd:
-                        await ProcessEagerSyncRequest(rpc, cmd);
+                        ProcessEagerSyncRequest(rpc, cmd);
                         break;
 
                     default:
@@ -331,7 +360,7 @@ namespace Babble.Core.NodeImpl
             }
         }
 
-        private async Task ProcessSyncRequestAsync(Rpc rpc, SyncRequest cmd)
+        private void ProcessSyncRequestAsync(Rpc rpc, SyncRequest cmd)
         {
             logger.Debug("Process SyncRequest FromId={FromId}; Known={@Known};", cmd.FromId, cmd.Known);
 
@@ -344,9 +373,9 @@ namespace Babble.Core.NodeImpl
 
             //Check sync limit
             bool overSyncLimit;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                overSyncLimit = await Controller.OverSyncLimit(cmd.Known, Conf.SyncLimit);
+                overSyncLimit = Controller.OverSyncLimit(cmd.Known, Conf.SyncLimit).Result;
             }
 
             if (overSyncLimit)
@@ -360,9 +389,9 @@ namespace Babble.Core.NodeImpl
                 var start = Stopwatch.StartNew();
                 Event[] diff;
                 Exception err;
-                using (await coreLock.LockAsync())
+                lock (_operationLock)
                 {
-                    (diff, err) = await Controller.EventDiff(cmd.Known);
+                    (diff, err) = Controller.EventDiff(cmd.Known).Result;
                 }
 
                 logger.Debug("EventDiff() duration={duration}", start.Nanoseconds());
@@ -388,9 +417,9 @@ namespace Babble.Core.NodeImpl
 
             //Get Self KnownEvents
             Dictionary<int, int> known;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                known = await Controller.KnownEvents();
+                known = Controller.KnownEvents().Result;
             }
 
             resp.Known = known;
@@ -403,10 +432,10 @@ namespace Babble.Core.NodeImpl
                 Error = respErr
             });
 
-            await rpc.RespondAsync(resp, respErr != null ? new NetError(resp.FromId.ToString(), respErr) : null);
+            rpc.RespondAsync(resp, respErr != null ? new NetError(resp.FromId.ToString(), respErr) : null).Wait();
         }
 
-        private async Task ProcessEagerSyncRequest(Rpc rpc, EagerSyncRequest cmd)
+        private void ProcessEagerSyncRequest(Rpc rpc, EagerSyncRequest cmd)
         {
             logger.Debug("EagerSyncRequest {EagerSyncRequest}", new
             {
@@ -417,9 +446,9 @@ namespace Babble.Core.NodeImpl
             var success = true;
 
             Exception respErr;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                respErr = await Sync(cmd.Events);
+                respErr = Sync(cmd.Events).Result;
             }
 
             if (respErr != null)
@@ -434,12 +463,16 @@ namespace Babble.Core.NodeImpl
                 Success = success
             };
 
-            await rpc.RespondAsync(resp, respErr != null ? new NetError(resp.FromId.ToString(), respErr) : null);
+            rpc
+                .RespondAsync(resp, respErr != null 
+                                        ? new NetError(resp.FromId.ToString(), respErr) 
+                                        : null)
+                .Wait();
         }
 
-        private async Task<(bool proceed, Exception error)> PreGossip()
+        private (bool proceed, Exception error) PreGossip()
         {
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
                 //Check if it is necessary to gossip
                 var needGossip = Controller.NeedGossip() || nodeState.IsStarting();
@@ -451,21 +484,17 @@ namespace Babble.Core.NodeImpl
 
                 //If the transaction pool is not empty, create a new self-event and empty the
                 //transaction pool in its payload
-                var err = await Controller.AddSelfEvent();
-                if (err != null)
-                {
-                    logger.Error("Adding SelfEvent", err);
-                    return (false, err);
-                }
+                var err = Controller.AddSelfEvent();
+                if (err == null) return (true, null);
+                logger.Error("Adding SelfEvent", err);
+                return (false, err);
             }
-
-            return (true, null);
         }
 
-        public async Task<Exception> Gossip(string peerAddr)
+        public Exception Gossip(string peerAddr)
         {
             //Pull
-            var (syncLimit, otherKnownEvents, err) = await Pull(peerAddr);
+            var (syncLimit, otherKnownEvents, err) = Pull(peerAddr);
             if (err != null)
             {
                 return err;
@@ -480,14 +509,14 @@ namespace Babble.Core.NodeImpl
             }
 
             //Push
-            err = await Push(peerAddr, otherKnownEvents);
+            err = Push(peerAddr, otherKnownEvents);
             if (err != null)
             {
                 return err;
             }
 
             //update peer selector
-            using (await selectorLock.LockAsync())
+            lock (_selectorLock)
             {
                 PeerSelector.UpdateLast(peerAddr);
             }
@@ -499,19 +528,19 @@ namespace Babble.Core.NodeImpl
             return null;
         }
 
-        private async Task<( bool syncLimit, Dictionary<int, int> otherKnown, Exception err)> Pull(string peerAddr)
+        private (bool syncLimit, Dictionary<int, int> otherKnown, Exception err) Pull(string peerAddr)
         {
             //Compute KnownEvents
             Dictionary<int, int> knownEvents;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                knownEvents = await Controller.KnownEvents();
+                knownEvents = Controller.KnownEvents().Result;
             }
 
             //Send SyncRequest
             var start = Stopwatch.StartNew();
 
-            var (resp, err) = await RequestSync(peerAddr, knownEvents);
+            var (resp, err) = RequestSync(peerAddr, knownEvents).Result;
             var elapsed = start.Nanoseconds();
             logger.Debug("RequestSync() Duration = {duration}", elapsed);
             if (err != null)
@@ -528,9 +557,9 @@ namespace Babble.Core.NodeImpl
             }
 
             //Set Events to Hashgraph and create new Head if necessary
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                err = await Sync(resp.Events);
+                err = Sync(resp.Events).Result;
             }
 
             if (err != null)
@@ -542,13 +571,13 @@ namespace Babble.Core.NodeImpl
             return (false, resp.Known, null);
         }
 
-        private async Task<Exception> Push(string peerAddr, Dictionary<int, int> knownEvents)
+        private Exception Push(string peerAddr, Dictionary<int, int> knownEvents)
         {
             //Check SyncLimit
             bool overSyncLimit;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                overSyncLimit = await Controller.OverSyncLimit(knownEvents, Conf.SyncLimit);
+                overSyncLimit = Controller.OverSyncLimit(knownEvents, Conf.SyncLimit).Result;
             }
 
             if (overSyncLimit)
@@ -562,9 +591,9 @@ namespace Babble.Core.NodeImpl
 
             Event[] diff;
             Exception err;
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
-                (diff, err) = await Controller.EventDiff(knownEvents);
+                (diff, err) = Controller.EventDiff(knownEvents).Result;
             }
 
             var elapsed = start.Nanoseconds();
@@ -588,7 +617,7 @@ namespace Babble.Core.NodeImpl
             start = Stopwatch.StartNew();
 
             EagerSyncResponse resp2;
-            (resp2, err) = await RequestEagerSync(peerAddr, wireEvents);
+            (resp2, err) = RequestEagerSync(peerAddr, wireEvents).Result;
             elapsed = start.Nanoseconds();
             logger.Debug("RequestEagerSync() {duration}", elapsed);
             if (err != null)
@@ -664,20 +693,20 @@ namespace Babble.Core.NodeImpl
             return err;
         }
 
-        private async Task<Exception> Commit(Block block)
+        private Exception Commit(Block block)
         {
             Exception err;
             byte[] stateHash;
-            (stateHash, err) = await Proxy.CommitBlock(block);
+            (stateHash, err) = Proxy.CommitBlock(block).Result;
 
             logger.Debug("CommitBlockResponse {@CommitBlockResponse}", new {Index = block.Index(), StateHash = stateHash.ToHex(), Err = err});
 
             block.Body.StateHash = stateHash;
 
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
                 BlockSignature sig;
-                (sig, err) = await Controller.SignBlock(block);
+                (sig, err) = Controller.SignBlock(block).Result;
                 if (err != null)
                 {
                     return err;
@@ -689,9 +718,9 @@ namespace Babble.Core.NodeImpl
             }
         }
 
-        private async Task AddTransaction(byte[] tx, CancellationToken ct)
+        private void AddTransaction(byte[] tx)
         {
-            using (await coreLock.LockAsync())
+            lock (_operationLock)
             {
                 Controller.AddTransactions(new[] {tx});
             }
@@ -700,56 +729,48 @@ namespace Babble.Core.NodeImpl
         public void Shutdown()
 
         {
-            if (nodeState.GetState() != NodeStateEnum.Shutdown)
+            if (nodeState.GetState() == NodeStateEnum.Shutdown) return;
+            logger.Debug("Shutdown");
+
+            //Exit any non-shutdown state immediately
+            nodeState.SetState(NodeStateEnum.Shutdown);
+
+            //Stop and wait for concurrent operations
+            cts.Cancel();
+
+            try
             {
-                logger.Debug("Shutdown");
-
-                //Exit any non-shutdown state immediately
-                nodeState.SetState(NodeStateEnum.Shutdown);
-
-                //Stop and wait for concurrent operations
-                cts.Cancel();
-
-                try
-                {
-                    nodeTask?.Wait();
-                }
-                catch (AggregateException e) when (e.InnerException is OperationCanceledException)
-                {
-                }
-                catch (AggregateException e)
-                {
-                    logger.Error(e, "Application termination ");
-                }
-                finally
-                {
-                    cts.Dispose();
-                }
-
-                //transport and store should only be closed once all concurrent operations
-                //are finished otherwise they will panic trying to use close objects
-                Trans.Close();
-                Controller.Hg.Store.Close();
+                nodeTask?.Wait();
             }
+            catch (AggregateException e) when (e.InnerException is OperationCanceledException)
+            {
+            }
+            catch (AggregateException e)
+            {
+                logger.Error(e, "Application termination ");
+            }
+            finally
+            {
+                cts.Dispose();
+            }
+
+            //transport and store should only be closed once all concurrent operations
+            //are finished otherwise they will panic trying to use close objects
+            Trans.Close();
+            Controller.Hg.Store.Close();
         }
 
         public Dictionary<string, string> GetStats()
         {
-
             var timeElapsed = nodeStart.Elapsed;
-
             var consensusEvents = Controller.GetConsensusEventsCount();
-
-            var consensusEventsPerSecond = (decimal) (consensusEvents) / timeElapsed.Seconds;
-
+            var consensusEventsPerSecond = (decimal) consensusEvents / timeElapsed.Seconds;
             var lastConsensusRound = Controller.GetLastConsensusRoundIndex();
             decimal consensusRoundsPerSecond = 0;
-
 
             if (lastConsensusRound != null)
             {
                 consensusRoundsPerSecond = (decimal) (lastConsensusRound) / timeElapsed.Seconds;
-
             }
 
             var s = new Dictionary<string, string>
@@ -782,21 +803,10 @@ namespace Babble.Core.NodeImpl
             decimal syncErrorRate = 0;
             if (syncRequests != 0)
             {
-                syncErrorRate = (decimal) syncErrors / (decimal) syncRequests;
+                syncErrorRate = (decimal) syncErrors / syncRequests;
             }
 
-            return (1 - syncErrorRate);
-
-
+            return 1 - syncErrorRate;
         }
-
-
-        public Task<(Block block, StoreError err )> GetBlock(int blockIndex)
-        {
-            return Controller.Hg.Store.GetBlock(blockIndex);
-
-
-        }
-
     }
 }

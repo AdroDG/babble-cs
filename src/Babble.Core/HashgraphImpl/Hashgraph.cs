@@ -12,6 +12,11 @@ using Serilog;
 
 namespace Babble.Core.HashgraphImpl
 {
+    /// <summary>
+    /// Hashgraph is a memory structure that can determine
+    /// the order of events coming from all the peers implied in a network
+    /// using a consensus algorithm
+    /// </summary>
     public class Hashgraph
     {
         private readonly ILogger logger;

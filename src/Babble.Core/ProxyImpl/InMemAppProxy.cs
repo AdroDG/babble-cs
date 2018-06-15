@@ -54,11 +54,11 @@ namespace Babble.Core.ProxyImpl
 //-------------------------------------------------------
 //Implement AppProxy Interface
 
-        public async Task SubmitTx(byte[] tx)
+        public Task SubmitTx(byte[] tx)
         {
             logger.Debug("SubmitTx -> {Tx}", tx.BytesToString());
-            await submitCh.EnqueueAsync(tx);
-            }
+            return submitCh.EnqueueAsync(tx);
+        }
 
         public byte[][] GetCommittedTransactions()
         {

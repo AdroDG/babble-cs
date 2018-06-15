@@ -346,7 +346,7 @@ namespace Babble.Core.NodeImpl
             }
         }
 
-        public async Task<Exception> AddSelfEvent()
+        public Exception AddSelfEvent()
         {
             if (TransactionPool.Count == 0 && BlockSignaturePool.Count == 0)
             {
@@ -360,7 +360,7 @@ namespace Babble.Core.NodeImpl
                 new[] {Head, ""},
                 PubKey(), Seq + 1);
 
-            var err = await SignAndInsertSelfEvent(newHead);
+            var err = SignAndInsertSelfEvent(newHead).Result;
 
             if (err != null)
             {

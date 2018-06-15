@@ -52,13 +52,12 @@ namespace Babble.Core.NodeImpl
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    var dur = timerFactory();
-                    if (dur.Ticks == 0)
-                    {
-                        break;
-                    }
+                    //var dur = timerFactory();
+                    //if (dur.Ticks == 0)
+                    //{
+                    //    break;
+                    //}
                     await Task.Delay(100, ct);
-                    //await Task.Delay(dur, ct);
                     await TickCh.EnqueueAsync(true, ct);
                     Set = false;
                 }
@@ -72,7 +71,6 @@ namespace Babble.Core.NodeImpl
                     Set = true;
                 }
             }
-
             
             async Task StopTask()
             {
@@ -83,7 +81,7 @@ namespace Babble.Core.NodeImpl
                 }
             };
 
-            await Task.WhenAny(Task.WhenAll(TimerTask(), ResetTask(), StopTask()), Task.Delay(Timeout.Infinite, ct));
+            await Task.WhenAll(TimerTask(), ResetTask(), StopTask());
         }
     }
 }
