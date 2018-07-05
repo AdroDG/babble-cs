@@ -1,0 +1,6 @@
+﻿namespace ChattyCathy
+{
+    class PeerFactory
+    {
+    }
+}
