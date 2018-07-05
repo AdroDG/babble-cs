@@ -1,0 +1,9 @@
+trigger: none
+queue: Hosted VS2017
+
+variables: 
+  BuildConfiguration: Release
+  BuildPlatform: Any CPU
+    
+steps:
+- template: .vsts.rx-shared.yml

@@ -11,6 +11,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Babble.Core", "src\Babble.C
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Babble.Client", "src\Babble.Client\Babble.Client.csproj", "{523378FA-D789-40F4-95ED-DFE1ECFDDFE9}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ChattyCathy", "src\ChattyCathy\ChattyCathy.csproj", "{8C1B708B-20E3-49D6-807A-2FCB7070B7DF}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ChattyCathy.Test", "tests\ChattyCathy.Test\ChattyCathy.Test.csproj", "{EC044127-29B6-4548-AA7D-F54A5C8896CF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -33,6 +37,14 @@ Global
 		{523378FA-D789-40F4-95ED-DFE1ECFDDFE9}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{523378FA-D789-40F4-95ED-DFE1ECFDDFE9}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{523378FA-D789-40F4-95ED-DFE1ECFDDFE9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8C1B708B-20E3-49D6-807A-2FCB7070B7DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C1B708B-20E3-49D6-807A-2FCB7070B7DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C1B708B-20E3-49D6-807A-2FCB7070B7DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C1B708B-20E3-49D6-807A-2FCB7070B7DF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EC044127-29B6-4548-AA7D-F54A5C8896CF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EC044127-29B6-4548-AA7D-F54A5C8896CF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EC044127-29B6-4548-AA7D-F54A5C8896CF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EC044127-29B6-4548-AA7D-F54A5C8896CF}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

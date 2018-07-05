@@ -200,10 +200,10 @@ namespace Babble.Core.NodeImpl
                     logger.Debug("Processing RPC");
                     await ProcessRpcAsync(rpc, ct);
 
-                    using (await netChMonitor.EnterAsync())
-                    {
-                        netChMonitor.Pulse();
-                    }
+                    //using (await netChMonitor.EnterAsync())
+                    //{
+                    //    netChMonitor.Pulse();
+                    //}
                 }
                 finally
                 {
@@ -228,10 +228,10 @@ namespace Babble.Core.NodeImpl
                     logger.Debug("Adding Transaction");
                     AddTransaction(tx);
 
-                    using (await submitChMonitor.EnterAsync())
-                    {
-                        submitChMonitor.Pulse();
-                    }
+                    //using (await submitChMonitor.EnterAsync())
+                    //{
+                    //    submitChMonitor.Pulse();
+                    //}
                 }
                 finally
                 {
@@ -268,10 +268,10 @@ namespace Babble.Core.NodeImpl
                         logger.Error("Committing Block", err);
                     }
 
-                    using (await commitChMonitor.EnterAsync())
-                    {
-                        commitChMonitor.Pulse();
-                    }
+                    //using (await commitChMonitor.EnterAsync())
+                    //{
+                    //    commitChMonitor.Pulse();
+                    //}
                 }
                 finally
                 {
